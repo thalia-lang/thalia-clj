@@ -15,35 +15,35 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-(ns thalia.nasm
+(ns thalia.x86-32
   (:gen-class)
   (:require [clojure.string :as string]))
-
-(def ^:private make nil)
 
 (defn ^:private next! [label]
   (swap! label inc))
 
-(defn ^:private make-expr-literal [node _]
+(defmulti ^:private emit (fn [node _] (:type node)))
+
+(defmethod ^:private emit :EXPR-LITERAL [node _]
   (str "\tpush " (get-in node [:token :value]) "\n"))
 
-(defn ^:private make-expr-variable [node _]
+(defmethod ^:private emit :EXPR-VARIABLE [node _]
   (str "\tpush qword [" (get-in node [:token :value]) "]\n"))
 
-(defn ^:private make-expr-grouping [node label]
-  (make (:value node) label))
+(defmethod ^:private emit :EXPR-GROUPING [node label]
+  (emit (:value node) label))
 
-(defn ^:private make-expr-unary [node label]
-  (str (make (:value node) label)
+(defmethod ^:private emit :EXPR-UNARY [node label]
+  (str (emit (:value node) label)
        "\tpop rax\n"
        (case (get-in node [:operator :type])
          :MINUS "\tneg rax\n"
          :BANG "\tnot rax\n")
        "\tpush rax\n"))
 
-(defn ^:private make-expr-binary [node label]
-  (str (make (:left node) label)
-       (make (:right node) label)
+(defmethod ^:private emit :EXPR-BINARY [node label]
+  (str (emit (:left node) label)
+       (emit (:right node) label)
        "\tpop rbx\n\tpop rax\n"
        (case (get-in node [:operator :type])
          :PLUS "\tadd rax, rbx\n"
@@ -65,103 +65,83 @@
                        "\tmov rdx, 0\n.ll" @label ":\n\tmov rax, rdx\n"))
        "\tpush rax\n"))
 
-(defn ^:private make-expr-assign [node label]
-  (str (make (:value node) label)
+(defmethod ^:private emit :EXPR-ASSIGN [node label]
+  (str (emit (:value node) label)
        "\tpop qword [" (get-in node [:target :token :value]) "]\n"
-       (make (:target node) label)))
+       (emit (:target node) label)))
 
-(defn ^:private make-stmt-expression [node label]
-  (str (make (:value node) label)
+(defmethod ^:private emit :STMT-EXPRESSION [node label]
+  (str (emit (:value node) label)
        "\tpop rax\n"))
 
-(defn ^:private make-stmt-print [node label]
+(defmethod ^:private emit :STMT-PRINT [node label]
   (->> (:values node)
-       (map #(str (make % label)
+       (map #(str (emit % label)
                   "\tpop rax\n\tcall int_print\n\tmov rax, ' '\n\tcall chr_print\n"))
        (string/join "")))
 
-(defn ^:private make-stmt-println [node label]
+(defmethod ^:private emit :STMT-PRINTLN [node label]
   (->> (:values node)
-       (map #(str (make % label)
+       (map #(str (emit % label)
                   "\tpop rax\n\tcall int_print\n\tmov rax, ' '\n\tcall chr_print\n"))
        (string/join "")
        (#(str % "\tcall eol_print\n"))))
 
-(defn ^:private make-stmt-block [node label]
+(defmethod ^:private emit :STMT-BLOCK [node label]
   (->> (:stmts node)
-       (map #(make % label))
+       (map #(emit % label))
        (string/join "")))
 
-(defn ^:private make-stmt-if [node label]
+(defmethod ^:private emit :STMT-IF [node label]
   (let [lbl1 (next! label)]
-    (str (make (:condition node) label)
+    (str (emit (:condition node) label)
          "\ttest rax, rax\n\tje .ll" lbl1 "\n"
-         (make (:body node) label)
+         (emit (:body node) label)
          (if (:else node)
            (let [lbl2 (next! label)]
              (str "\tjmp .ll" lbl2 "\n.ll" lbl1 ":\n"
-                  (make (:else node) label)
+                  (emit (:else node) label)
                   ".ll" lbl2 ":\n"))
            (str ".ll" lbl1 ":\n")))))
 
-(defn ^:private make-stmt-while [node label]
+(defmethod ^:private emit :STMT-WHILE [node label]
   (let [lbl1 (next! label)
         lbl2 (next! label)]
     (str ".ll" lbl1 ":\n"
-         (make (:condition node) label)
+         (emit (:condition node) label)
          "\ttest rax, rax\n\tje .ll" lbl2 "\n"
-         (make (:body node) label)
+         (emit (:body node) label)
          "\tjmp .ll" lbl1 "\n.ll" lbl2 ":\n")))
 
-(defn ^:private make-stmt-each [node label]
+(defmethod ^:private emit :STMT-EACH [node label]
   (let [values (:values node)
         id (get-in node [:target :value])
         lbl1 (next! label)
         lbl2 (next! label)]
     (str (if (:from values)
-           (make (:from values) label)
+           (emit (:from values) label)
            "\tpush 0\n")
          "\tpop qword [" id "]\n"
          ".ll" lbl1 ":\n"
          "\tpush qword [" id "]\n"
-         (make (:to values) label)
+         (emit (:to values) label)
          "\tpop rbx\n\tpop rax\n\tcmp rax, rbx\n\tjge .ll" lbl2 "\n"
-         (make (:body node) label)
+         (emit (:body node) label)
          (if (:step values)
-           (str (make (:step values) label)
+           (str (emit (:step values) label)
                 "\tpop rax\n\tadd qword [" id "], rax\n")
            (str "\tinc qword [" id "]\n"))
          "\tjmp .ll" lbl1 "\n.ll" lbl2 ":\n")))
 
-(defn ^:private make-decl-variable [node _]
+(defmethod ^:private emit :DECL-VARIABLE [node _]
   (str "\t" (get-in node [:token :value]) " dq 0\n"))
 
-(defn ^:private make-decl-program [node label]
+(defmethod ^:private emit :DECL-PROGRAM [node label]
   (str "\nsection .text\n_start:\n"
-       (make (:body node) label)
+       (emit (:body node) label)
        "\tcall sys_exit\n\n"))
 
-(def ^:private make-funcs
-  {:EXPR-LITERAL make-expr-literal
-   :EXPR-VARIABLE make-expr-variable
-   :EXPR-GROUPING make-expr-grouping
-   :EXPR-UNARY make-expr-unary
-   :EXPR-BINARY make-expr-binary
-   :EXPR-ASSIGN make-expr-assign
-   :STMT-EXPRESSION make-stmt-expression
-   :STMT-PRINT make-stmt-print
-   :STMT-PRINTLN make-stmt-println
-   :STMT-BLOCK make-stmt-block
-   :STMT-IF make-stmt-if
-   :STMT-WHILE make-stmt-while
-   :STMT-EACH make-stmt-each
-   :DECL-VARIABLE make-decl-variable
-   :DECL-PROGRAM make-decl-program})
-
-(defn ^:private make [node label]
-  ((make-funcs (:type node)) node label))
-
-(defn translate [nodes]
+(defn make [nodes]
   (let [label (atom 0)
         program (->> nodes
                      (filter #(= (:type %) :DECL-PROGRAM))
@@ -169,7 +149,7 @@
                      (#(if % % {:type :DECL-PROGRAM :body {:type :STMT-BLOCK :stmts []}})))]
     (->> nodes
          (filter #(not= (:type %) :DECL-PROGRAM))
-         (map #(make % label))
+         (map #(emit % label))
          (string/join "")
          (#(str "global _start\n\n"
                 "extern sys_exit\n"
@@ -177,5 +157,5 @@
                 "extern eol_print\n"
                 "extern int_print\n"
                 "\nsection .data\n" %
-                (make program label))))))
+                (emit program label))))))
 

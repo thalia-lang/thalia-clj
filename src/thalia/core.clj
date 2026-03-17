@@ -21,7 +21,7 @@
             [babashka.process :as process]
             [cheshire.core :as json]
             [clojure.string :as string]
-            [thalia.nasm :as nasm]
+            [thalia.x86-32 :as x86-32]
             [thalia.lexer :as lexer]
             [thalia.parser :as parser]))
 
@@ -56,7 +56,7 @@
          (:tokens)
          (parser/parse)
          (:ast)
-         (nasm/translate)
+         (x86-32/make)
          (spit dest))
     dest))
 

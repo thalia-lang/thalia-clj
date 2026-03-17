@@ -4,7 +4,7 @@ define EOL
 $(BLANK)
 endef
 
-CC = nasm -felf64
+CC = yasm -felf64
 
 SRC_DIR = src
 LIB_DIR = lib
