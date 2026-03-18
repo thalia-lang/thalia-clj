@@ -1,6 +1,7 @@
 {
   "src": "src/",
   "dest": "bin/",
-  "target": "app"
+  "target": "app",
+  "arch": "x86-32"
 }
 

@@ -15,73 +15,86 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-(ns thalia.x86-32
+(ns thalia.riscv32
   (:gen-class)
+  (:refer-clojure :exclude [pop])
   (:require [clojure.string :as string]))
 
 (defn ^:private next! [label]
   (swap! label inc))
 
+(defn push [reg]
+  (str "\taddi sp, sp, -4\n"
+       "\tsw " reg ", 0(sp)\n"))
+
+(defn pop [reg]
+  (str "\tlw " reg ", 0(sp)\n"
+       "\taddi sp, sp, 4\n"))
+
 (defmulti ^:private emit (fn [node _] (:type node)))
 
 (defmethod ^:private emit :EXPR-LITERAL [node _]
-  (str "\tpush " (get-in node [:token :value]) "\n"))
+  (str "\tli t0, " (get-in node [:token :value]) "\n"
+       (push "t0")))
 
 (defmethod ^:private emit :EXPR-VARIABLE [node _]
-  (str "\tpush DWORD PTR [" (get-in node [:token :value]) "]\n"))
+  (str "\tla t0, " (get-in node [:token :value]) "\n"
+       "\tlw t1, 0(t0)\n"
+       (push "t1")))
 
 (defmethod ^:private emit :EXPR-GROUPING [node label]
   (emit (:value node) label))
 
 (defmethod ^:private emit :EXPR-UNARY [node label]
   (str (emit (:value node) label)
-       "\tpop eax\n"
+       (pop "t0")
        (case (get-in node [:operator :type])
-         :MINUS "\tneg eax\n"
-         :BANG "\tcmp eax, 0\n\tsete al\n\tmovzx eax, al\n")
-       "\tpush eax\n"))
+         :MINUS "\tneg t0, t0\n"
+         :BANG "\tseqz t0, t0\n")
+       (push "t0")))
 
 (defmethod ^:private emit :EXPR-BINARY [node label]
   (str (emit (:left node) label)
        (emit (:right node) label)
-       "\tpop ebx\n\tpop eax\n"
+       (pop "t1")
+       (pop "t0")
        (case (get-in node [:operator :type])
-         :PLUS "\tadd eax, ebx\n"
-         :MINUS "\tsub eax, ebx\n"
-         :STAR "\timul eax, ebx\n"
-         :SLASH "\tcdq\n\tidiv ebx\n"
-         :PERCENT "\tcdq\n\tidiv ebx\n\tmov eax, edx\n"
-         :EQUAL-EQUAL "\tcmp eax, ebx\n\tsete al\n\tmovzx eax, al\n"
-         :BANG-EQUAL "\tcmp eax, ebx\n\tsetne al\n\tmovzx eax, al\n"
-         :LESS "\tcmp eax, ebx\n\tsetl al\n\tmovzx eax, al\n"
-         :LESS-EQUAL "\tcmp eax, ebx\n\tsetle al\n\tmovzx eax, al\n"
-         :GREATER "\tcmp eax, ebx\n\tsetg al\n\tmovzx eax, al\n"
-         :GREATER-EQUAL "\tcmp eax, ebx\n\tsetge al\n\tmovzx eax, al\n")
-       "\tpush eax\n"))
+         :PLUS "\tadd t0, t0, t1\n"
+         :MINUS "\tsub t0, t0, t1\n"
+         :STAR "\tmul t0, t0, t1\n"
+         :SLASH "\tdiv t0, t0, t1\n"
+         :PERCENT "\trem t0, t0, t1\n"
+         :EQUAL-EQUAL "\tsub t0, t0, t1\n\tseqz t0, t0\n"
+         :BANG-EQUAL "\tsub t0, t0, t1\n\tsnez t0, t0\n"
+         :LESS "\tslt t0, t0, t1\n"
+         :LESS-EQUAL "\tsgt t0, t0, t1\n\txori t0, t0, 1\n"
+         :GREATER "\tsgt t0, t0, t1\n"
+         :GREATER-EQUAL "\tslt t0, t0, t1\n\txori t0, t0, 1\n")
+       (push "t0")))
 
 (defmethod ^:private emit :EXPR-ASSIGN [node label]
   (str (emit (:value node) label)
-       "\tpop eax\n"
-       "\tmov DWORD PTR [" (get-in node [:target :token :value]) "], eax\n"
-       "\tpush eax\n"))
+       (pop "t0")
+       "\tla t1, " (get-in node [:target :token :value]) "\n"
+       "\tsw t0, 0(t1)\n"
+       (push "t0")))
 
 (defmethod ^:private emit :STMT-EXPRESSION [node label]
   (str (emit (:value node) label)
-       "\tadd esp, 4\n"))
+       "\taddi sp, sp, 4\n"))
 
 (defmethod ^:private emit :STMT-PRINT [node label]
   (->> (:values node)
        (map #(str (emit % label)
-                  "\tpush OFFSET FLAT:__fmt_int__\n"
-                  "\tcall printf\n"
-                  "\tadd esp, 8\n"))
+                  (pop "a1")
+                  "\tla a0, __fmt_int__\n"
+                  "\tcall printf\n"))
        (string/join "")))
 
 (defmethod ^:private emit :STMT-PRINTLN [node label]
   (str (emit {:type :STMT-PRINT :values (:values node)} label)
-       "\tpush OFFSET FLAT:__fmt_eol__\n"
-       "\tcall printf\n"
-       "\tadd esp, 4\n"))
+       "\tla a0, __fmt_eol__\n"
+       "\tcall printf\n"))
 
 (defmethod ^:private emit :STMT-BLOCK [node label]
   (->> (:stmts node)
@@ -91,13 +104,12 @@
 (defmethod ^:private emit :STMT-IF [node label]
   (let [ll1 (next! label)]
     (str (emit (:condition node) label)
-         "\tpop eax\n"
-         "\ttest eax, eax\n"
-         "\tje .ll" ll1 "\n"
+         (pop "t0")
+         "\tbeqz t0, .ll" ll1 "\n"
          (emit (:body node) label)
          (if (:else node)
            (let [ll2 (next! label)]
-             (str "\tjmp .ll" ll2 "\n"
+             (str "\tj .ll" ll2 "\n"
                   ".ll" ll1 ":\n"
                   (emit (:else node) label)
                   ".ll" ll2 ":\n"))
@@ -108,11 +120,10 @@
         ll2 (next! label)]
     (str ".ll" ll1 ":\n"
          (emit (:condition node) label)
-         "\tpop eax\n"
-         "\ttest eax, eax\n"
-         "\tje .ll" ll2 "\n"
+         (pop "t0")
+         "\tbeqz t0, .ll" ll2 "\n"
          (emit (:body node) label)
-         "\tjmp .ll" ll1 "\n"
+         "\tj .ll" ll1 "\n"
          ".ll" ll2 ":\n")))
 
 (defmethod ^:private emit :STMT-EACH [node label]
@@ -122,42 +133,45 @@
         ll2 (next! label)]
     (str (if (:from values)
            (emit (:from values) label)
-           "\tpush 0\n")
-         "\tpop eax\n"
-         "\tmov DWORD PTR [" id "], eax\n"
+           (push "zero"))
+         (pop "t0")
+         "\tla t1, " id "\n"
+         "\tsw t0, 0(t1)\n"
          ".ll" ll1 ":\n"
-         "\tpush DWORD PTR [" id "]\n"
+         "\tla t1, " id "\n"
+         "\tsw t0, 0(t1)\n"
+         (push "t0")
          (emit (:to values) label)
-         "\tpop ebx\n"
-         "\tpop eax\n"
-         "\tcmp eax, ebx\n"
-         "\tjge .ll" ll2 "\n"
+         (pop "t1")
+         (pop "t0")
+         "\tbge t0, t1, .ll" ll2 "\n"
          (emit (:body node) label)
          (if (:step values)
            (str (emit (:step values) label)
-                "\tpop eax\n"
-                "\tadd DWORD PTR [" id "], eax\n")
-           (str "\tinc DWORD PTR [" id "]\n"))
-         "\tjmp .ll" ll1 "\n"
+                (pop "t2"))
+           (str "\tli t2, 1\n"))
+         "\tla t1, " id "\n"
+         "\tlw t0, 0(t1)\n"
+         "\tadd t0, t0, t2\n"
+         "\tsw t0, 0(t1)\n"
+         "\tj .ll" ll1 "\n"
          ".ll" ll2 ":\n")))
 
 (defmethod ^:private emit :DECL-VARIABLE [node _]
-  (str (get-in node [:token :value]) ": .long 0\n"))
+  (str (get-in node [:token :value]) ": .word 0\n"))
 
 (defmethod ^:private emit :DECL-PROGRAM [node label]
   (str ".text\n"
        "main:\n"
        (emit (:body node) label)
-       "\txor eax, eax\n"
+       "\tli a0, 0\n"
        "\tret\n"))
 
 (defn make [nodes]
   (let [label (atom 0)
         program (or (->> nodes (filter #(= (:type %) :DECL-PROGRAM)) first)
                     {:type :DECL-PROGRAM :body {:type :STMT-BLOCK :stmts []}})]
-    (str ".intel_syntax noprefix\n\n"
-         ".extern printf\n\n"
-         ".global main\n\n"
+    (str ".globl main\n\n"
          ".data\n"
          "__fmt_int__: .asciz \"%d \"\n"
          "__fmt_eol__: .asciz \"\\n\"\n"

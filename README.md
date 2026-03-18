@@ -8,7 +8,6 @@
 - [Building the project](#building-the-project)
   - [Prerequirements](#prerequirements)
   - [Running the program](#running-the-program)
-  - [Running the tests](#running-the-tests)
   - [Installation](#installation)
 - [Usage](#usage)
 - [Options](#options)
@@ -21,7 +20,7 @@
 - Java
 - Clojure
 - Leiningen
-- YASM
+- GCC
 
 These packages can usually be installed through your distributions package manager.
 
@@ -36,14 +35,7 @@ To setup the project for development, we simply have to run the `setup.sh` scrip
 If everything went well with the compilation we can run our compiler with `lein run`:
 
 ```
-STDLIB_DIR='./stdlib/lib/' lein run './examples/example1/compile.json'
-```
-
-### Running the tests
-We can run the tests with the `lein run` command:
-
-```
-lein test
+lein run './examples/example1/compile.json'
 ```
 
 ### Installation

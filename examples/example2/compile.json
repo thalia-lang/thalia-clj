@@ -1,6 +1,8 @@
 {
   "src": "src/",
   "dest": "bin/",
-  "target": "app"
+  "target": "app",
+  "arch": "i386",
+  "static": true
 }
 
